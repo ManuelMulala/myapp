@@ -1,26 +1,37 @@
 version: 0.2
 
 phases:
+  install:
+    runtime-versions:
+      nodejs: 20
   pre_build:
     commands:
+      - echo Installing dependencies and running unit tests...
+      - cd src && npm ci && npm test && cd ..
       - echo Logging in to Amazon ECR...
-      - aws --version
-      - $(aws ecr get-login --no-include-email --region $AWS_DEFAULT_REGION)
-      - REPOSITORY_URI=<account_id>.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/myapp-repo
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - REGISTRY=$ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - REPOSITORY_URI=$REGISTRY/myapp-repo
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $REGISTRY
       - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c 1-7)
   build:
     commands:
       - echo Build started on `date`
-      - echo Building the Docker image...
-      - docker build -t $REPOSITORY_URI:$IMAGE_TAG .
+      - docker build -t $REPOSITORY_URI:$IMAGE_TAG -t $REPOSITORY_URI:latest .
   post_build:
     commands:
-      - echo Build completed on `date`
       - echo Pushing the Docker image...
       - docker push $REPOSITORY_URI:$IMAGE_TAG
-      - echo Writing image definitions file...
+      - docker push $REPOSITORY_URI:latest
+      - echo Writing image files for deployment...
+      # imageDetail.json is used by the ECS Blue/Green (CodeDeploy) deploy action
+      - printf '{"ImageURI":"%s"}' $REPOSITORY_URI:$IMAGE_TAG > imageDetail.json
+      # imagedefinitions.json is used by the standard ECS deploy action
       - printf '[{"name":"myapp-container","imageUri":"%s"}]' $REPOSITORY_URI:$IMAGE_TAG > imagedefinitions.json
 
-
 artifacts:
-  files: imagedefinitions.json
+  files:
+    - imageDetail.json
+    - imagedefinitions.json
+    - appspec.yml
+    - taskdef.json
